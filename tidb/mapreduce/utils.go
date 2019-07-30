@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -55,18 +57,27 @@ func CheckFile(expected, got string) (string, bool) {
 	if err != nil {
 		panic(err)
 	}
+	sc1 := bufio.NewScanner(bytes.NewReader(c1))
 	c2, err := ioutil.ReadFile(got)
 	if err != nil {
 		panic(err)
 	}
-	s1 := strings.TrimSpace(string(c1))
-	s2 := strings.TrimSpace(string(c2))
-	if s1 == s2 {
-		return "", true
-	}
+	sc2 := bufio.NewScanner(bytes.NewReader(c2))
+	for sc1.Scan() && sc2.Scan() {
+		l1 := strings.TrimSpace(sc1.Text())
+		l2 := strings.TrimSpace(sc2.Text())
 
-	errMsg := fmt.Sprintf("expected:\n%s\n, but got:\n%s\n", c1, c2)
-	return errMsg, false
+		parts1 := strings.Split(l1, " ")
+		parts2 := strings.Split(l2, " ")
+
+		n1, _ := strconv.Atoi(parts1[1])
+		n2, _ := strconv.Atoi(parts2[1])
+		if n1 != n2 {
+			errMsg := fmt.Sprintf("expected:\n%s\n, but got:\n%s\n", l1, l2)
+			return errMsg, false
+		}
+	}
+	return "", true
 }
 
 // CreateFileAndBuf opens or creates a specific file for writing.

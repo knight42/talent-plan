@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"runtime"
+	"sort"
 	"strconv"
 	"sync"
 )
@@ -85,7 +86,8 @@ func (c *MRCluster) worker() {
 	for {
 		select {
 		case t := <-c.taskCh:
-			if t.phase == mapPhase {
+			switch t.phase {
+			case mapPhase:
 				content, err := ioutil.ReadFile(t.mapFile)
 				if err != nil {
 					panic(err)
@@ -94,6 +96,7 @@ func (c *MRCluster) worker() {
 				fs := make([]*os.File, t.nReduce)
 				bs := make([]*bufio.Writer, t.nReduce)
 				for i := range fs {
+					// NOTE: t.taskNumber == nMap
 					rpath := reduceName(t.dataDir, t.jobName, t.taskNumber, i)
 					fs[i], bs[i] = CreateFileAndBuf(rpath)
 				}
@@ -107,9 +110,51 @@ func (c *MRCluster) worker() {
 				for i := range fs {
 					SafeClose(fs[i], bs[i])
 				}
-			} else {
-				// YOUR CODE HERE :)
-				panic("YOUR CODE HERE")
+
+			case reducePhase:
+				fs := make([]*os.File, t.nMap)
+				bs := make([]*bufio.Reader, t.nMap)
+				for i := range fs {
+					rpath := reduceName(t.dataDir, t.jobName, i, t.taskNumber)
+					fs[i], bs[i] = OpenFileAndBuf(rpath)
+				}
+				var kvs []KeyValue
+				for i := range fs {
+					dec := json.NewDecoder(bs[i])
+					for dec.More() {
+						var kv KeyValue
+						err := dec.Decode(&kv)
+						if err != nil {
+							log.Fatalln(err)
+						}
+						kvs = append(kvs, kv)
+					}
+				}
+				kvMap := make(map[string][]string)
+				var intermediateKeys []string
+				keyResultMap := make(map[string]string)
+				for _, kv := range kvs {
+					kvMap[kv.Key] = append(kvMap[kv.Key], kv.Value)
+					intermediateKeys = append(intermediateKeys, kv.Key)
+				}
+				sort.Strings(intermediateKeys)
+				for _, k := range intermediateKeys {
+					result := t.reduceF(k, kvMap[k])
+					keyResultMap[k] = result
+				}
+				wpath := mergeName(t.dataDir, t.jobName, t.taskNumber)
+				wfs, wbs := CreateFileAndBuf(wpath)
+				for _, result := range keyResultMap {
+					_, _ = wbs.WriteString(result)
+				}
+				SafeClose(wfs, wbs)
+				for i := range fs {
+					if err := fs[i].Close(); err != nil {
+						log.Fatalln(err)
+					}
+				}
+			default:
+				panic("unknown phase")
 			}
 			t.wg.Done()
 		case <-c.exit:
@@ -156,12 +201,32 @@ func (c *MRCluster) run(jobName, dataDir string, mapF MapF, reduceF ReduceF, map
 
 	// reduce phase
 	// YOUR CODE HERE :D
-	panic("YOUR CODE HERE")
+	tasks = make([]*task, 0, nReduce)
+	reduceFiles := make([]string, 0, nReduce)
+	for i := 0; i < nReduce; i++ {
+		t := &task{
+			dataDir:    dataDir,
+			jobName:    jobName,
+			phase:      reducePhase,
+			taskNumber: i,
+			nReduce:    nReduce,
+			nMap:       nMap,
+			reduceF:    reduceF,
+		}
+		t.wg.Add(1)
+		tasks = append(tasks, t)
+		reduceFiles = append(reduceFiles, mergeName(dataDir, jobName, i))
+		go func() { c.taskCh <- t }()
+	}
+	for _, t := range tasks {
+		t.wg.Wait()
+	}
+	notify <- reduceFiles
 }
 
 func ihash(s string) int {
 	h := fnv.New32a()
-	h.Write([]byte(s))
+	_, _ = h.Write([]byte(s))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
